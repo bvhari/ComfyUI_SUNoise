@@ -128,7 +128,7 @@ def sample_dpmpp_sde_sun(model, x, sigmas, extra_args=None, callback=None, disab
             sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta)
             s_ = t_fn(sd)
             x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
-            x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s)) * s_noise * su
+            x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s)) * su
             denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
 
             # Step 2
