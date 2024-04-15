@@ -4,22 +4,36 @@ import torch
 from tqdm.auto import trange
 
 
-def su_noise_sampler(x, sigma_min, sigma_max, s_noise):
+def su_noise_sampler(x, sigma_min, sigma_max, s_noise, _seed):
     def scaled_uniform_noise(sigma, sigma_next):
         range_limit_sigma = (sigma - sigma_min) / (sigma_max - sigma_min)
         range_limit = s_noise * range_limit_sigma
-        torch_dist = torch.distributions.uniform.Uniform(-1*range_limit, range_limit)
-        scaled_noise = torch_dist.sample(x.size())
-        scaled_noise = torch.squeeze(scaled_noise, -1)
-        return scaled_noise
+        range_limit = range_limit.item()
+        noise_batch = []
+        noise_channels = []
+        noise_generator = torch.Generator(device='cpu')
+        seed = _seed + int(1000*range_limit)
+        noise_generator.manual_seed(seed)
+        for i in range(x.size()[0]): # batch
+            for j in range(x.size()[1]): # channels
+                noise = torch.rand(x.size()[2:], generator=noise_generator, dtype=torch.float32, device="cpu")
+                scaled_noise = (-1*range_limit) + (2*range_limit*noise)
+                noise_channels.append(scaled_noise)
+            scaled_noise_channels = torch.stack(noise_channels, 0)
+            noise_batch.append(scaled_noise_channels)
+        scaled_noise_batch = torch.stack(noise_batch, 0)
+        scaled_noise_batch = scaled_noise_batch.to(device=x.device, dtype=x.dtype)
+        return scaled_noise_batch
     return scaled_uniform_noise
 
 @torch.no_grad()
 def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with Euler method steps."""
     extra_args = {} if extra_args is None else extra_args
+    seed = extra_args.get("seed", None)
+
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -38,8 +52,10 @@ def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
 def sample_dpm_2_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with DPM-Solver second-order steps."""
     extra_args = {} if extra_args is None else extra_args
+    seed = extra_args.get("seed", None)
+
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -67,8 +83,10 @@ def sample_dpm_2_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
 def sample_dpmpp_2s_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with DPM-Solver++(2S) second-order steps."""
     extra_args = {} if extra_args is None else extra_args
+    seed = extra_args.get("seed", None)
+
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda t: t.neg().exp()
     t_fn = lambda sigma: sigma.log().neg()
@@ -100,9 +118,10 @@ def sample_dpmpp_2s_ancestral_sun(model, x, sigmas, extra_args=None, callback=No
 @torch.no_grad()
 def sample_dpmpp_sde_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=1 / 2):
     """DPM-Solver++ (stochastic)."""
-    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
     seed = extra_args.get("seed", None)
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise) if noise_sampler is None else noise_sampler
+
+    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda t: t.neg().exp()
@@ -147,8 +166,9 @@ def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
         raise ValueError('solver_type must be \'heun\' or \'midpoint\'')
 
     seed = extra_args.get("seed", None)
+
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
 
@@ -188,10 +208,10 @@ def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
 @torch.no_grad()
 def sample_dpmpp_3m_sde_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """DPM-Solver++(3M) SDE."""
-
     seed = extra_args.get("seed", None)
+
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
 
