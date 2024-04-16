@@ -360,6 +360,70 @@ class SamplerDPMPP_3M_SDE_SUN:
         sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise}, {})
         return (sampler, )
 
+class SamplersSUNoise:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":
+                    {"sampler_name": (["euler_ancestral", "dpm_2_ancestral", "dpmpp_2s_ancestral",
+                                       "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde"], ),
+                    "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                      }
+               }
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(self, sampler_name, solver_type, s_noise):
+        solver_type = 'midpoint'
+        eta = 1.0
+        r = 0.5
+        if sampler_name == "euler_ancestral":
+            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+        elif sampler_name == "dpm_2_ancestral":
+            sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+        elif sampler_name == "dpmpp_2s_ancestral":
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2s_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+        elif sampler_name == "dpmpp_sde":
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_sde_sun, {"eta": eta, "s_noise": s_noise, "r": r}, {})
+        elif sampler_name == "dpmpp_2m_sde":
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2m_sde_sun, {"eta": eta, "s_noise": s_noise, "solver_type": solver_type}, {})
+        elif sampler_name == "dpmpp_3m_sde":
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise}, {})
+        return (sampler, )
+
+class SamplersSUNoiseAdvanced:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":
+                    {"sampler_name": (["euler_ancestral", "dpm_2_ancestral", "dpmpp_2s_ancestral",
+                                       "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde"], ),
+                    "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                    "solver_type": (['midpoint', 'heun'], ),
+                    "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                    "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                      }
+               }
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(self, sampler_name, s_noise, solver_type, eta, r):
+        if sampler_name == "euler_ancestral":
+            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+        elif sampler_name == "dpm_2_ancestral":
+            sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+        elif sampler_name == "dpmpp_2s_ancestral":
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2s_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+        elif sampler_name == "dpmpp_sde":
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_sde_sun, {"eta": eta, "s_noise": s_noise, "r": r}, {})
+        elif sampler_name == "dpmpp_2m_sde":
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2m_sde_sun, {"eta": eta, "s_noise": s_noise, "solver_type": solver_type}, {})
+        elif sampler_name == "dpmpp_3m_sde":
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise}, {})
+        return (sampler, )
+
 
 NODE_CLASS_MAPPINGS = {
     "SamplerEulerAncestral_SUN": SamplerEulerAncestral_SUN,
@@ -368,6 +432,8 @@ NODE_CLASS_MAPPINGS = {
     "SamplerDPMPP_SDE_SUN": SamplerDPMPP_SDE_SUN,
     "SamplerDPMPP_2M_SDE_SUN": SamplerDPMPP_2M_SDE_SUN,
     "SamplerDPMPP_3M_SDE_SUN": SamplerDPMPP_3M_SDE_SUN,
+    "SamplersSUNoise": SamplersSUNoise,
+    "SamplersSUNoiseAdvanced": SamplersSUNoiseAdvanced,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -377,4 +443,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SamplerDPMPP_SDE_SUN": "SamplerDPMPP_SDE_SUN",
     "SamplerDPMPP_2M_SDE_SUN": "SamplerDPMPP_2M_SDE_SUN",
     "SamplerDPMPP_3M_SDE_SUN": "SamplerDPMPP_3M_SDE_SUN",
+    "SamplersSUNoise": "SamplersSUNoise",
+    "SamplersSUNoiseAdvanced": "SamplersSUNoiseAdvanced",
 }
