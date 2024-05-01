@@ -374,7 +374,7 @@ class SamplersSUNoise:
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, sampler_name, solver_type, s_noise):
+    def get_sampler(self, sampler_name, s_noise):
         solver_type = 'midpoint'
         eta = 1.0
         r = 0.5
