@@ -15,6 +15,7 @@ def su_noise_sampler(x, sigma_min, sigma_max, s_noise, _seed):
         seed = _seed + int(1000*range_limit)
         noise_generator.manual_seed(seed)
         for i in range(x.size()[0]): # batch
+            noise_channels = []
             for j in range(x.size()[1]): # channels
                 noise = torch.rand(x.size()[2:], generator=noise_generator, dtype=torch.float32, device="cpu")
                 scaled_noise = (-1*range_limit) + (2*range_limit*noise)
