@@ -1,0 +1,14 @@
+[project]
+name = "comfyui_sunoise"
+description = "Scaled Uniform Noise for Ancestral and Stochastic samplers"
+version = "1.0.0"
+license = "LICENSE"
+
+[project.urls]
+Repository = "https://github.com/bvhari/ComfyUI_SUNoise"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = ""
+DisplayName = "ComfyUI_SUNoise"
+Icon = ""
