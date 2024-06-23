@@ -27,6 +27,34 @@ def su_noise_sampler(x, sigma_min, sigma_max, s_noise, _seed):
         return scaled_noise_batch
     return scaled_uniform_noise
 
+def prepare_su_noise(latent_image, _seed, noise_inds=None, scale=1.0):
+    noise_batch = []
+    noise_channels = []
+    noise_generator = torch.Generator(device='cpu')
+    seed = _seed + int(1000*scale)
+    noise_generator.manual_seed(seed)
+
+    if noise_inds is None:
+        for i in range(latent_image.size()[0]): # channels
+            noise = torch.rand(latent_image.size()[1:], dtype=torch.float32, layout=latent_image.layout, generator=noise_generator, device="cpu")
+            scaled_noise = (-1*scale) + (2*scale*noise)
+            noise_channels.append(scaled_noise)
+        return torch.stack(noise_channels, 0)
+    
+    unique_inds, inverse = np.unique(noise_inds, return_inverse=True)
+    for i in range(unique_inds[-1]+1):
+        for j in range(latent_image.size()[1]): # channels
+            noise = torch.rand(latent_image.size()[2:], dtype=torch.float32, layout=latent_image.layout, generator=noise_generator, device="cpu")
+            scaled_noise = (-1*scale) + (2*scale*noise)
+            noise_channels.append(scaled_noise)
+        scaled_noise_channels = torch.stack(noise_channels, 0)
+        if i in unique_inds:
+            noise_batch.append(scaled_noise_channels)
+    noises = [noise_batch[i] for i in inverse]
+    noises = torch.stack(noises, 0)
+    return noises
+
+
 @torch.no_grad()
 def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with Euler method steps."""
@@ -425,6 +453,32 @@ class SamplersSUNoiseAdvanced:
             sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise}, {})
         return (sampler, )
 
+class Noise_SUNoise:
+    def __init__(self, seed, scale):
+        self.seed = seed
+        self.scale = scale
+
+    def generate_noise(self, input_latent):
+        latent_image = input_latent["samples"]
+        batch_inds = input_latent["batch_index"] if "batch_index" in input_latent else None
+        return prepare_su_noise(latent_image, self.seed, batch_inds, self.scale)
+
+class SUNoiseLatent:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":{
+                    "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                    "scale": ("FLOAT", {"default": 1.0, "min": 0, "max": 100, "step": 0.01}),
+                     }
+                }
+
+    RETURN_TYPES = ("NOISE",)
+    FUNCTION = "get_noise"
+    CATEGORY = "sampling/custom_sampling/noise"
+
+    def get_noise(self, noise_seed, scale):
+        return (Noise_SUNoise(noise_seed, scale),)
+
 
 NODE_CLASS_MAPPINGS = {
     "SamplerEulerAncestral_SUN": SamplerEulerAncestral_SUN,
@@ -435,6 +489,7 @@ NODE_CLASS_MAPPINGS = {
     "SamplerDPMPP_3M_SDE_SUN": SamplerDPMPP_3M_SDE_SUN,
     "SamplersSUNoise": SamplersSUNoise,
     "SamplersSUNoiseAdvanced": SamplersSUNoiseAdvanced,
+    "SUNoiseLatent": SUNoiseLatent,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -446,4 +501,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SamplerDPMPP_3M_SDE_SUN": "SamplerDPMPP_3M_SDE_SUN",
     "SamplersSUNoise": "SamplersSUNoise",
     "SamplersSUNoiseAdvanced": "SamplersSUNoiseAdvanced",
+    "SUNoiseLatent": 'SUNoiseLatent',
 }
