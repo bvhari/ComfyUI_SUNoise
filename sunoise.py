@@ -1,4 +1,5 @@
 import comfy.samplers
+import comfy.model_patcher
 from comfy.k_diffusion.sampling import get_ancestral_step, to_d
 import torch
 from tqdm.auto import trange
@@ -73,6 +74,36 @@ def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
         # Euler method
         dt = sigma_down - sigmas[i]
         x = x + d * dt
+        if sigmas[i + 1] > 0:
+            x = x + noise_sampler(sigmas[i], sigmas[i + 1])
+    return x
+
+@torch.no_grad()
+def sample_euler_ancestral_cfg_pp_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
+    """Ancestral sampling with Euler method steps."""
+    extra_args = {} if extra_args is None else extra_args
+    seed = extra_args.get("seed", None)
+
+    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
+    temp = [0]
+    def post_cfg_function(args):
+        temp[0] = args["uncond_denoised"]
+        return args["denoised"]
+
+    model_options = extra_args.get("model_options", {}).copy()
+    extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
+
+    s_in = x.new_ones([x.shape[0]])
+    for i in trange(len(sigmas) - 1, disable=disable):
+        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
+        if callback is not None:
+            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+        d = to_d(x, sigmas[i], temp[0])
+        # Euler method
+        dt = sigma_down - sigmas[i]
+        x = denoised + (d * sigma_down)
         if sigmas[i + 1] > 0:
             x = x + noise_sampler(sigmas[i], sigmas[i + 1])
     return x
@@ -302,6 +333,23 @@ class SamplerEulerAncestral_SUN:
         sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
         return (sampler, )
 
+class SamplerEulerAncestralCFGpp_SUN:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required":
+                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                      }
+               }
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(self, eta, s_noise):
+        sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_cfg_pp_sun, {"eta": eta, "s_noise": s_noise}, {})
+        return (sampler, )
+
 class SamplerDPM2Ancestral_SUN:
     @classmethod
     def INPUT_TYPES(s):
@@ -393,7 +441,7 @@ class SamplersSUNoise:
     @classmethod
     def INPUT_TYPES(s):
         return {"required":
-                    {"sampler_name": (["euler_ancestral", "dpm_2_ancestral", "dpmpp_2s_ancestral",
+                    {"sampler_name": (["euler_ancestral", "euler_ancestral_cfg_pp", "dpm_2_ancestral", "dpmpp_2s_ancestral",
                                        "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde"], ),
                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
                       }
@@ -409,6 +457,8 @@ class SamplersSUNoise:
         r = 0.5
         if sampler_name == "euler_ancestral":
             sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+        elif sampler_name == "euler_ancestral_cfg_pp":
+            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_cfg_pp_sun, {"eta": eta, "s_noise": s_noise}, {})
         elif sampler_name == "dpm_2_ancestral":
             sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
         elif sampler_name == "dpmpp_2s_ancestral":
@@ -425,7 +475,7 @@ class SamplersSUNoiseAdvanced:
     @classmethod
     def INPUT_TYPES(s):
         return {"required":
-                    {"sampler_name": (["euler_ancestral", "dpm_2_ancestral", "dpmpp_2s_ancestral",
+                    {"sampler_name": (["euler_ancestral", "euler_ancestral_cfg_pp", "dpm_2_ancestral", "dpmpp_2s_ancestral",
                                        "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde"], ),
                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
                     "solver_type": (['midpoint', 'heun'], ),
@@ -441,6 +491,8 @@ class SamplersSUNoiseAdvanced:
     def get_sampler(self, sampler_name, s_noise, solver_type, eta, r):
         if sampler_name == "euler_ancestral":
             sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+        elif sampler_name == "euler_ancestral_cfg_pp":
+            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_cfg_pp_sun, {"eta": eta, "s_noise": s_noise}, {})
         elif sampler_name == "dpm_2_ancestral":
             sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
         elif sampler_name == "dpmpp_2s_ancestral":
@@ -482,6 +534,7 @@ class SUNoiseLatent:
 
 NODE_CLASS_MAPPINGS = {
     "SamplerEulerAncestral_SUN": SamplerEulerAncestral_SUN,
+    "SamplerEulerAncestralCFGpp_SUN": SamplerEulerAncestralCFGpp_SUN,
     "SamplerDPM2Ancestral_SUN": SamplerDPM2Ancestral_SUN,
     "SamplerDPMPP2SAncestral_SUN": SamplerDPMPP2SAncestral_SUN,
     "SamplerDPMPP_SDE_SUN": SamplerDPMPP_SDE_SUN,
@@ -494,6 +547,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SamplerEulerAncestral_SUN": "SamplerEulerAncestral_SUN",
+    "SamplerEulerAncestralCFGpp_SUN": "SamplerEulerAncestralCFGpp_SUN",
     "SamplerDPM2Ancestral_SUN": "SamplerDPM2Ancestral_SUN",
     "SamplerDPMPP2SAncestral_SUN": "SamplerDPMPP2SAncestral_SUN",
     "SamplerDPMPP_SDE_SUN": "SamplerDPMPP_SDE_SUN",
