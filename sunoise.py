@@ -1,7 +1,9 @@
 import comfy.samplers
 import comfy.model_patcher
 from comfy.k_diffusion.sampling import get_ancestral_step, to_d
+
 import torch
+import numpy as np
 from tqdm.auto import trange
 
 
@@ -443,7 +445,7 @@ class SamplersSUNoise:
         return {"required":
                     {"sampler_name": (["euler_ancestral", "euler_ancestral_cfg_pp", "dpm_2_ancestral", "dpmpp_2s_ancestral",
                                        "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde"], ),
-                    "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                    "s_noise": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                       }
                }
     RETURN_TYPES = ("SAMPLER",)
@@ -477,7 +479,7 @@ class SamplersSUNoiseAdvanced:
         return {"required":
                     {"sampler_name": (["euler_ancestral", "euler_ancestral_cfg_pp", "dpm_2_ancestral", "dpmpp_2s_ancestral",
                                        "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde"], ),
-                    "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
+                    "s_noise": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
                     "solver_type": (['midpoint', 'heun'], ),
                     "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
                     "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
@@ -520,7 +522,7 @@ class SUNoiseLatent:
     def INPUT_TYPES(s):
         return {"required":{
                     "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                    "scale": ("FLOAT", {"default": 1.0, "min": 0, "max": 100, "step": 0.01}),
+                    "scale": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100, "step": 0.01}),
                      }
                 }
 
