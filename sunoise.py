@@ -7,11 +7,39 @@ import numpy as np
 from tqdm.auto import trange
 
 
-def su_noise_sampler(x, sigma_min, sigma_max, s_noise, _seed):
-    def scaled_uniform_noise(sigma, sigma_next):
-        range_limit_sigma = (sigma - sigma_min) / (sigma_max - sigma_min)
-        range_limit = s_noise * range_limit_sigma
-        range_limit = range_limit.item()
+def su_noise_sampler(x, _seed, noise_type):
+    def scaled_uniform_noise_multires(sigma_down):
+        range_limit = sigma_down.item()
+        noise_batch = []
+        noise_channels = []
+        noise_stack = []
+        noise_generator = torch.Generator(device='cpu')
+        seed = _seed + int(1000*range_limit)
+        noise_generator.manual_seed(seed)
+        latent_size = torch.tensor(x.size()[2:])
+        for i in range(x.size()[0]): # batch
+            noise_channels = []
+            for j in range(x.size()[1]): # channels
+                noise_stack = []
+                for f in (1, 2):
+                    noise = torch.rand(*((latent_size/f).to(dtype=torch.int32).tolist()), generator=noise_generator, dtype=torch.float32, device="cpu")
+                    noise = torch.unsqueeze(noise, 0)
+                    noise = torch.unsqueeze(noise, 0)
+                    noise = torch.nn.functional.interpolate(noise, size=x.size()[2:], mode='nearest-exact')
+                    noise = torch.squeeze(noise, (0, 1))
+                    noise_stack.append(noise)
+                noise_stack = torch.stack(noise_stack, 0)
+                noise_channels_multires = torch.sum(noise_stack, dim=0, keepdim=False)
+                scaled_noise = ((noise_channels_multires-noise_channels_multires.min())*(2*range_limit/(noise_channels_multires.max()-noise_channels_multires.min()))) - range_limit
+                noise_channels.append(scaled_noise)
+            scaled_noise_channels = torch.stack(noise_channels, 0)
+            noise_batch.append(scaled_noise_channels)
+        scaled_noise_batch = torch.stack(noise_batch, 0)
+        scaled_noise_batch = scaled_noise_batch.to(device=x.device, dtype=x.dtype)
+        return scaled_noise_batch
+
+    def scaled_uniform_noise(sigma_down):
+        range_limit = sigma_down.item()
         noise_batch = []
         noise_channels = []
         noise_generator = torch.Generator(device='cpu')
@@ -28,7 +56,11 @@ def su_noise_sampler(x, sigma_min, sigma_max, s_noise, _seed):
         scaled_noise_batch = torch.stack(noise_batch, 0)
         scaled_noise_batch = scaled_noise_batch.to(device=x.device, dtype=x.dtype)
         return scaled_noise_batch
-    return scaled_uniform_noise
+    
+    if noise_type=='standard':
+        return scaled_uniform_noise
+    elif noise_type=='multires':
+        return scaled_uniform_noise_multires
 
 def prepare_su_noise(latent_image, _seed, noise_inds=None, scale=1.0):
     noise_batch = []
@@ -57,15 +89,60 @@ def prepare_su_noise(latent_image, _seed, noise_inds=None, scale=1.0):
     noises = torch.stack(noises, 0)
     return noises
 
+def prepare_su_noise_multires(latent_image, _seed, noise_inds=None, scale=1.0):
+    noise_batch = []
+    noise_channels = []
+    noise_generator = torch.Generator(device='cpu')
+    seed = _seed + int(1000*scale)
+    noise_generator.manual_seed(seed)
+    latent_size = torch.tensor(latent_image.size()[1:])
+    if noise_inds is None:
+        for i in range(latent_image.size()[0]): # channels
+            noise_stack = []
+            for f in (1, 2):
+                noise = torch.rand(*((latent_size/f).to(dtype=torch.int32).tolist()), generator=noise_generator, dtype=torch.float32, device="cpu")
+                noise = torch.unsqueeze(noise, 0)
+                noise = torch.unsqueeze(noise, 0)
+                noise = torch.nn.functional.interpolate(noise, size=latent_image.size()[1:], mode='nearest-exact')
+                noise = torch.squeeze(noise, (0, 1))
+                noise_stack.append(noise)
+            noise_stack = torch.stack(noise_stack, 0)
+            noise_multires = torch.sum(noise_stack, dim=0, keepdim=False)
+            scaled_noise = ((noise_multires-noise_multires.min())*(2*scale/(noise_multires.max()-noise_multires.min()))) - scale
+            noise_channels.append(scaled_noise)
+        return torch.stack(noise_channels, 0)
+    
+    unique_inds, inverse = np.unique(noise_inds, return_inverse=True)
+    for i in range(unique_inds[-1]+1):
+        for j in range(latent_image.size()[1]): # channels
+            noise_stack = []
+            for f in (1, 2):
+                noise = torch.rand(*((latent_size/f).to(dtype=torch.int32).tolist()), generator=noise_generator, dtype=torch.float32, device="cpu")
+                noise = torch.unsqueeze(noise, 0)
+                noise = torch.unsqueeze(noise, 0)
+                noise = torch.nn.functional.interpolate(noise, size=latent_image.size()[1:], mode='nearest-exact')
+                noise = torch.squeeze(noise, (0, 1))
+                noise_stack.append(noise)
+            noise_stack = torch.stack(noise_stack, 0)
+            noise_multires = torch.sum(noise_stack, dim=0, keepdim=False)
+            scaled_noise = ((noise_multires-noise_multires.min())*(2*scale/(noise_multires.max()-noise_multires.min()))) - scale
+            noise_channels.append(scaled_noise)
+        scaled_noise_channels = torch.stack(noise_channels, 0)
+        if i in unique_inds:
+            noise_batch.append(scaled_noise_channels)
+    noises = [noise_batch[i] for i in inverse]
+    noises = torch.stack(noises, 0)
+    return noises
+
 
 @torch.no_grad()
-def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
+def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, noise_type='standard'):
     """Ancestral sampling with Euler method steps."""
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -77,17 +154,17 @@ def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
         dt = sigma_down - sigmas[i]
         x = x + d * dt
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1])
+            x = x + noise_sampler(sigma_down)
     return x
 
 @torch.no_grad()
-def sample_euler_ancestral_cfg_pp_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
+def sample_euler_ancestral_cfg_pp_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, noise_type='standard'):
     """Ancestral sampling with Euler method steps."""
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     temp = [0]
     def post_cfg_function(args):
         temp[0] = args["uncond_denoised"]
@@ -107,17 +184,17 @@ def sample_euler_ancestral_cfg_pp_sun(model, x, sigmas, extra_args=None, callbac
         dt = sigma_down - sigmas[i]
         x = denoised + (d * sigma_down)
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1])
+            x = x + noise_sampler(sigma_down)
     return x
 
 @torch.no_grad()
-def sample_dpm_2_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
+def sample_dpm_2_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, noise_type='standard'):
     """Ancestral sampling with DPM-Solver second-order steps."""
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -138,17 +215,17 @@ def sample_dpm_2_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
             denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
             d_2 = to_d(x_2, sigma_mid, denoised_2)
             x = x + d_2 * dt_2
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1])
+            x = x + noise_sampler(sigma_down)
     return x
 
 @torch.no_grad()
-def sample_dpmpp_2s_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
+def sample_dpmpp_2s_ancestral_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, noise_type='standard'):
     """Ancestral sampling with DPM-Solver++(2S) second-order steps."""
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda t: t.neg().exp()
     t_fn = lambda sigma: sigma.log().neg()
@@ -174,16 +251,16 @@ def sample_dpmpp_2s_ancestral_sun(model, x, sigmas, extra_args=None, callback=No
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_2
         # Noise addition
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1])
+            x = x + noise_sampler(sigma_down)
     return x
 
 @torch.no_grad()
-def sample_dpmpp_sde_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=1 / 2):
+def sample_dpmpp_sde_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=1/2, noise_type='standard'):
     """DPM-Solver++ (stochastic)."""
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda t: t.neg().exp()
@@ -209,7 +286,7 @@ def sample_dpmpp_sde_sun(model, x, sigmas, extra_args=None, callback=None, disab
             sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta)
             s_ = t_fn(sd)
             x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
-            x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s))
+            x_2 = x_2 + noise_sampler(sd)
             denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
 
             # Step 2
@@ -217,11 +294,11 @@ def sample_dpmpp_sde_sun(model, x, sigmas, extra_args=None, callback=None, disab
             t_next_ = t_fn(sd)
             denoised_d = (1 - fac) * denoised + fac * denoised_2
             x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
-            x = x + noise_sampler(sigma_fn(t), sigma_fn(t_next))
+            x = x + noise_sampler(sd)
     return x
 
 @torch.no_grad()
-def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, solver_type='midpoint'):
+def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, solver_type='midpoint', noise_type='standard'):
     """DPM-Solver++(2M) SDE."""
 
     if solver_type not in {'heun', 'midpoint'}:
@@ -230,7 +307,7 @@ def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
 
@@ -240,6 +317,7 @@ def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
 
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
         if sigmas[i + 1] == 0:
@@ -261,19 +339,19 @@ def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
                     x = x + 0.5 * (-h - eta_h).expm1().neg() * (1 / r) * (denoised - old_denoised)
 
             if eta:
-                x = x + noise_sampler(sigmas[i], sigmas[i + 1])
+                x = x + noise_sampler(sigma_down)
 
         old_denoised = denoised
         h_last = h
     return x
 
 @torch.no_grad()
-def sample_dpmpp_3m_sde_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
+def sample_dpmpp_3m_sde_sun(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, noise_type='standard'):
     """DPM-Solver++(3M) SDE."""
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = su_noise_sampler(x, sigma_min, sigma_max, s_noise, seed) if noise_sampler is None else noise_sampler
+    noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
 
@@ -282,6 +360,7 @@ def sample_dpmpp_3m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
 
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
         if sigmas[i + 1] == 0:
@@ -311,133 +390,12 @@ def sample_dpmpp_3m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
                 x = x + phi_2 * d
 
             if eta:
-                x = x + noise_sampler(sigmas[i], sigmas[i + 1])
+                x = x + noise_sampler(sigma_down)
 
         denoised_1, denoised_2 = denoised, denoised_1
         h_1, h_2 = h, h_1
     return x
 
-
-class SamplerEulerAncestral_SUN:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      }
-               }
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, eta, s_noise):
-        sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
-        return (sampler, )
-
-class SamplerEulerAncestralCFGpp_SUN:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      }
-               }
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, eta, s_noise):
-        sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_cfg_pp_sun, {"eta": eta, "s_noise": s_noise}, {})
-        return (sampler, )
-
-class SamplerDPM2Ancestral_SUN:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      }
-               }
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, eta, s_noise):
-        sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
-        return (sampler, )
-
-class SamplerDPMPP2SAncestral_SUN:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      }
-               }
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, eta, s_noise):
-        sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2s_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
-        return (sampler, )
-    
-class SamplerDPMPP_SDE_SUN:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      }
-               }
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, eta, s_noise, r):
-        sampler = comfy.samplers.KSAMPLER(sample_dpmpp_sde_sun, {"eta": eta, "s_noise": s_noise, "r": r}, {})
-        return (sampler, )
-
-class SamplerDPMPP_2M_SDE_SUN:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required":
-                    {"solver_type": (['midpoint', 'heun'], ),
-                     "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      }
-               }
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, solver_type, eta, s_noise):
-        sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2m_sde_sun, {"eta": eta, "s_noise": s_noise, "solver_type": solver_type}, {})
-        return (sampler, )
-
-class SamplerDPMPP_3M_SDE_SUN:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required":
-                    {"eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                     "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
-                      }
-               }
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, eta, s_noise):
-        sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise}, {})
-        return (sampler, )
 
 class SamplersSUNoise:
     @classmethod
@@ -445,7 +403,7 @@ class SamplersSUNoise:
         return {"required":
                     {"sampler_name": (["euler_ancestral", "euler_ancestral_cfg_pp", "dpm_2_ancestral", "dpmpp_2s_ancestral",
                                        "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde"], ),
-                    "s_noise": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                    "noise_type": (['standard', 'multires'], ),
                       }
                }
     RETURN_TYPES = ("SAMPLER",)
@@ -453,24 +411,25 @@ class SamplersSUNoise:
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, sampler_name, s_noise):
-        solver_type = 'midpoint'
+    def get_sampler(self, sampler_name, noise_type):
+        s_noise = 1.0
+        solver_type = 'heun'
         eta = 1.0
         r = 0.5
         if sampler_name == "euler_ancestral":
-            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         elif sampler_name == "euler_ancestral_cfg_pp":
-            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_cfg_pp_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_cfg_pp_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         elif sampler_name == "dpm_2_ancestral":
-            sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         elif sampler_name == "dpmpp_2s_ancestral":
-            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2s_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2s_ancestral_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         elif sampler_name == "dpmpp_sde":
-            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_sde_sun, {"eta": eta, "s_noise": s_noise, "r": r}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_sde_sun, {"eta": eta, "s_noise": s_noise, "r": r, "noise_type": noise_type}, {})
         elif sampler_name == "dpmpp_2m_sde":
-            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2m_sde_sun, {"eta": eta, "s_noise": s_noise, "solver_type": solver_type}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2m_sde_sun, {"eta": eta, "s_noise": s_noise, "solver_type": solver_type, "noise_type": noise_type}, {})
         elif sampler_name == "dpmpp_3m_sde":
-            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         return (sampler, )
 
 class SamplersSUNoiseAdvanced:
@@ -479,7 +438,8 @@ class SamplersSUNoiseAdvanced:
         return {"required":
                     {"sampler_name": (["euler_ancestral", "euler_ancestral_cfg_pp", "dpm_2_ancestral", "dpmpp_2s_ancestral",
                                        "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde"], ),
-                    "s_noise": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step":0.01, "round": False}),
+                    "noise_type": (['standard', 'multires'], ),
+                    "s_noise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step":0.01, "round": False}),
                     "solver_type": (['midpoint', 'heun'], ),
                     "eta": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
                     "r": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 100.0, "step":0.01, "round": False}),
@@ -490,32 +450,36 @@ class SamplersSUNoiseAdvanced:
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, sampler_name, s_noise, solver_type, eta, r):
+    def get_sampler(self, sampler_name, noise_type, s_noise, solver_type, eta, r):
         if sampler_name == "euler_ancestral":
-            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         elif sampler_name == "euler_ancestral_cfg_pp":
-            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_cfg_pp_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_euler_ancestral_cfg_pp_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         elif sampler_name == "dpm_2_ancestral":
-            sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpm_2_ancestral_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         elif sampler_name == "dpmpp_2s_ancestral":
-            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2s_ancestral_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2s_ancestral_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         elif sampler_name == "dpmpp_sde":
-            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_sde_sun, {"eta": eta, "s_noise": s_noise, "r": r}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_sde_sun, {"eta": eta, "s_noise": s_noise, "r": r, "noise_type": noise_type}, {})
         elif sampler_name == "dpmpp_2m_sde":
-            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2m_sde_sun, {"eta": eta, "s_noise": s_noise, "solver_type": solver_type}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_2m_sde_sun, {"eta": eta, "s_noise": s_noise, "solver_type": solver_type, "noise_type": noise_type}, {})
         elif sampler_name == "dpmpp_3m_sde":
-            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise}, {})
+            sampler = comfy.samplers.KSAMPLER(sample_dpmpp_3m_sde_sun, {"eta": eta, "s_noise": s_noise, "noise_type": noise_type}, {})
         return (sampler, )
 
 class Noise_SUNoise:
-    def __init__(self, seed, scale):
+    def __init__(self, seed, scale, noise_type):
         self.seed = seed
         self.scale = scale
+        self.noise_type = noise_type
 
     def generate_noise(self, input_latent):
         latent_image = input_latent["samples"]
         batch_inds = input_latent["batch_index"] if "batch_index" in input_latent else None
-        return prepare_su_noise(latent_image, self.seed, batch_inds, self.scale)
+        if self.noise_type=='standard':
+            return prepare_su_noise(latent_image, self.seed, batch_inds, self.scale)
+        elif self.noise_type=='multires':
+            return prepare_su_noise_multires(latent_image, self.seed, batch_inds, self.scale)
 
 class SUNoiseLatent:
     @classmethod
@@ -523,6 +487,7 @@ class SUNoiseLatent:
         return {"required":{
                     "noise_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                     "scale": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100, "step": 0.01}),
+                    "noise_type": (['standard', 'multires'], ),
                      }
                 }
 
@@ -530,31 +495,17 @@ class SUNoiseLatent:
     FUNCTION = "get_noise"
     CATEGORY = "sampling/custom_sampling/noise"
 
-    def get_noise(self, noise_seed, scale):
-        return (Noise_SUNoise(noise_seed, scale),)
+    def get_noise(self, noise_seed, scale, noise_type):
+        return (Noise_SUNoise(noise_seed, scale, noise_type),)
 
 
 NODE_CLASS_MAPPINGS = {
-    "SamplerEulerAncestral_SUN": SamplerEulerAncestral_SUN,
-    "SamplerEulerAncestralCFGpp_SUN": SamplerEulerAncestralCFGpp_SUN,
-    "SamplerDPM2Ancestral_SUN": SamplerDPM2Ancestral_SUN,
-    "SamplerDPMPP2SAncestral_SUN": SamplerDPMPP2SAncestral_SUN,
-    "SamplerDPMPP_SDE_SUN": SamplerDPMPP_SDE_SUN,
-    "SamplerDPMPP_2M_SDE_SUN": SamplerDPMPP_2M_SDE_SUN,
-    "SamplerDPMPP_3M_SDE_SUN": SamplerDPMPP_3M_SDE_SUN,
     "SamplersSUNoise": SamplersSUNoise,
     "SamplersSUNoiseAdvanced": SamplersSUNoiseAdvanced,
     "SUNoiseLatent": SUNoiseLatent,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "SamplerEulerAncestral_SUN": "SamplerEulerAncestral_SUN",
-    "SamplerEulerAncestralCFGpp_SUN": "SamplerEulerAncestralCFGpp_SUN",
-    "SamplerDPM2Ancestral_SUN": "SamplerDPM2Ancestral_SUN",
-    "SamplerDPMPP2SAncestral_SUN": "SamplerDPMPP2SAncestral_SUN",
-    "SamplerDPMPP_SDE_SUN": "SamplerDPMPP_SDE_SUN",
-    "SamplerDPMPP_2M_SDE_SUN": "SamplerDPMPP_2M_SDE_SUN",
-    "SamplerDPMPP_3M_SDE_SUN": "SamplerDPMPP_3M_SDE_SUN",
     "SamplersSUNoise": "SamplersSUNoise",
     "SamplersSUNoiseAdvanced": "SamplersSUNoiseAdvanced",
     "SUNoiseLatent": 'SUNoiseLatent',
