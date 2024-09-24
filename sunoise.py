@@ -1,6 +1,6 @@
 import comfy.samplers
 import comfy.model_patcher
-from comfy.k_diffusion.sampling import get_ancestral_step, to_d
+from comfy.k_diffusion.sampling import get_ancestral_step, to_d, BrownianTreeNoiseSampler
 
 import torch
 import numpy as np
@@ -141,7 +141,7 @@ def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
 
-    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    # sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
     noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
@@ -154,7 +154,7 @@ def sample_euler_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
         dt = sigma_down - sigmas[i]
         x = x + d * dt
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigma_down)
+            x = x + (noise_sampler(sigma_down) if i%2!=0 else torch.randn_like(x) * s_noise * sigma_up)
     return x
 
 @torch.no_grad()
@@ -163,7 +163,7 @@ def sample_euler_ancestral_cfg_pp_sun(model, x, sigmas, extra_args=None, callbac
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
 
-    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    # sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
     noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     temp = [0]
     def post_cfg_function(args):
@@ -184,7 +184,7 @@ def sample_euler_ancestral_cfg_pp_sun(model, x, sigmas, extra_args=None, callbac
         dt = sigma_down - sigmas[i]
         x = denoised + (d * sigma_down)
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigma_down)
+            x = x + (noise_sampler(sigma_down) if i%2!=0 else torch.randn_like(x) * s_noise * sigma_up)
     return x
 
 @torch.no_grad()
@@ -193,7 +193,7 @@ def sample_dpm_2_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
 
-    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    # sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
     noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
@@ -215,7 +215,7 @@ def sample_dpm_2_ancestral_sun(model, x, sigmas, extra_args=None, callback=None,
             denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
             d_2 = to_d(x_2, sigma_mid, denoised_2)
             x = x + d_2 * dt_2
-            x = x + noise_sampler(sigma_down)
+            x = x + (noise_sampler(sigma_down) if i%2!=0 else torch.randn_like(x) * s_noise * sigma_up)
     return x
 
 @torch.no_grad()
@@ -224,7 +224,7 @@ def sample_dpmpp_2s_ancestral_sun(model, x, sigmas, extra_args=None, callback=No
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
 
-    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    # sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
     noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda t: t.neg().exp()
@@ -251,7 +251,7 @@ def sample_dpmpp_2s_ancestral_sun(model, x, sigmas, extra_args=None, callback=No
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_2
         # Noise addition
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigma_down)
+            x = x + (noise_sampler(sigma_down) if i%2!=0 else torch.randn_like(x) * s_noise * sigma_up)
     return x
 
 @torch.no_grad()
@@ -260,6 +260,7 @@ def sample_dpmpp_sde_sun(model, x, sigmas, extra_args=None, callback=None, disab
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    noise_sampler_bt = BrownianTreeNoiseSampler(x, sigma_min, sigma_max, seed=seed, cpu=True) if noise_sampler is None else noise_sampler
     noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
@@ -284,17 +285,17 @@ def sample_dpmpp_sde_sun(model, x, sigmas, extra_args=None, callback=None, disab
 
             # Step 1
             sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta)
-            s_ = t_fn(sd)
-            x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
-            x_2 = x_2 + noise_sampler(sd)
+            s_2 = t_fn(sd)
+            x_2 = (sigma_fn(s_2) / sigma_fn(t)) * x - (t - s_2).expm1() * denoised
+            x_2 = x_2 + (noise_sampler(sd) if i%2!=0 else noise_sampler_bt(sigma_fn(t), sigma_fn(s)) * s_noise * su)
             denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
 
             # Step 2
             sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(t_next), eta)
-            t_next_ = t_fn(sd)
+            t_next = t_fn(sd)
             denoised_d = (1 - fac) * denoised + fac * denoised_2
-            x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
-            x = x + noise_sampler(sd)
+            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (t - t_next).expm1() * denoised_d
+            x = x + (noise_sampler(sd) if i%2!=0 else noise_sampler_bt(sigma_fn(t), sigma_fn(t_next)) * s_noise * su)
     return x
 
 @torch.no_grad()
@@ -307,6 +308,7 @@ def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    noise_sampler_bt = BrownianTreeNoiseSampler(x, sigma_min, sigma_max, seed=seed, cpu=True) if noise_sampler is None else noise_sampler
     noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
@@ -339,7 +341,7 @@ def sample_dpmpp_2m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
                     x = x + 0.5 * (-h - eta_h).expm1().neg() * (1 / r) * (denoised - old_denoised)
 
             if eta:
-                x = x + noise_sampler(sigma_down)
+                x = x + (noise_sampler(sigma_down) if i%2!=0 else noise_sampler_bt(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * eta_h).expm1().neg().sqrt() * s_noise)
 
         old_denoised = denoised
         h_last = h
@@ -351,6 +353,7 @@ def sample_dpmpp_3m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
     seed = extra_args.get("seed", None)
 
     sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    noise_sampler_bt = BrownianTreeNoiseSampler(x, sigma_min, sigma_max, seed=seed, cpu=True) if noise_sampler is None else noise_sampler
     noise_sampler = su_noise_sampler(x, seed, noise_type) if noise_sampler is None else noise_sampler
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
@@ -390,7 +393,7 @@ def sample_dpmpp_3m_sde_sun(model, x, sigmas, extra_args=None, callback=None, di
                 x = x + phi_2 * d
 
             if eta:
-                x = x + noise_sampler(sigma_down)
+                x = x + (noise_sampler(sigma_down) if i%2!=0 else noise_sampler_bt(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * h * eta).expm1().neg().sqrt() * s_noise)
 
         denoised_1, denoised_2 = denoised, denoised_1
         h_1, h_2 = h, h_1
